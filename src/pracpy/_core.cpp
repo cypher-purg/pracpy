@@ -1,8 +1,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
-#include <pybind11/stl.h>
+#include <pybind11/stl.h>  // Crucial for std::vector conversion
 #include <cmath>
 #include <stdexcept>
+#include <vector>
 #include <string>
 
 namespace py = pybind11;
@@ -10,46 +11,17 @@ namespace py = pybind11;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 static py::array_t<double> make_array(std::size_t n) {
     return py::array_t<double>(n);
 }
 
 // ---------------------------------------------------------------------------
-// ra_decay — exponential (radioactive) decay
-//
-// Models:  N(t)     = N0 * exp(-lambda * t)   [remaining quantity]
-//          decay(t) = N0 - N(t)               [decayed quantity]
-//          t_half   = ln(2) / lambda           [half-life]
-//
-// Parameters
-// ----------
-// N0     : initial quantity (atoms, counts, mass …)
-// lam    : decay constant  (lambda, s⁻¹ or any reciprocal time unit)
-// t_end  : end time of the simulation
-// points : number of sample points along [0, t_end]  (default 1000)
-//
-// Returns a Python dict with keys:
-//   "t"      – time array  [0 … t_end]
-//   "N"      – remaining quantity array
-//   "decay"  – decayed quantity array
-//   "lambda" – the decay constant used
-//   "t_half" – computed half-life
+// single_decay — previously ra_decay
 // ---------------------------------------------------------------------------
-py::dict ra_decay(double N0, double lam, double t_end,
-                std::size_t points = 1000)
+py::dict single_decay(double N0, double lam, double t_end, std::size_t points = 1000)
 {
-    if (N0 <= 0.0)
-        throw std::invalid_argument("N0 must be positive (got "
-                                    + std::to_string(N0) + ")");
-    if (lam <= 0.0)
-        throw std::invalid_argument("lambda must be positive (got "
-                                    + std::to_string(lam) + ")");
-    if (t_end <= 0.0)
-        throw std::invalid_argument("t_end must be positive (got "
-                                    + std::to_string(t_end) + ")");
-    if (points < 2)
-        throw std::invalid_argument("points must be >= 2");
+    if (N0 <= 0.0 || lam <= 0.0 || t_end <= 0.0 || points < 2)
+        throw std::invalid_argument("Invalid inputs for single_decay");
 
     auto t_arr     = make_array(points);
     auto N_arr     = make_array(points);
@@ -80,38 +52,94 @@ py::dict ra_decay(double N0, double lam, double t_end,
 }
 
 // ---------------------------------------------------------------------------
+// chain_decay — N-step radioactive decay chain (Bateman Equations)
+// ---------------------------------------------------------------------------
+py::dict chain_decay(double N0, const std::vector<double>& lambdas, double t_end, std::size_t points = 1000)
+{
+    std::size_t M = lambdas.size();
+    if (M == 0) throw std::invalid_argument("lambdas list cannot be empty");
+    if (N0 <= 0.0 || t_end <= 0.0 || points < 2) throw std::invalid_argument("Invalid simulation bounds");
+
+    // The analytical Bateman formula divides by (lam_j - lam_i).
+    // It breaks down if decay constants are identical.
+    for (std::size_t i = 0; i < M; ++i) {
+        if (lambdas[i] <= 0.0) throw std::invalid_argument("Lambdas must be positive");
+        for (std::size_t j = i + 1; j < M; ++j) {
+            if (std::abs(lambdas[i] - lambdas[j]) < 1e-12) {
+                throw std::invalid_argument("Degenerate lambdas (identical decay constants) not supported in analytical solver.");
+            }
+        }
+    }
+
+    // Allocate a 1D array for time, and a 2D array for the isotope quantities
+    py::array_t<double> t_arr(points);
+    py::array_t<double> N_arr({M, points});
+
+    // Use unchecked proxies to bypass bounds checking in the hot loop for raw speed
+    auto t_buf = t_arr.mutable_unchecked<1>();
+    auto N_buf = N_arr.mutable_unchecked<2>();
+
+    // Pre-compute Bateman Coefficients (O(M^2)) outside the time loop
+    // c[n][i] stores the coefficient for the i-th exponential term of the n-th isotope.
+    std::vector<std::vector<double>> c(M, std::vector<double>(M, 0.0));
+
+    for (std::size_t n = 0; n < M; ++n) {
+        double prod_lambda = 1.0;
+        for (std::size_t k = 0; k < n; ++k) {
+            prod_lambda *= lambdas[k];
+        }
+
+        for (std::size_t i = 0; i <= n; ++i) {
+            double denom = 1.0;
+            for (std::size_t j = 0; j <= n; ++j) {
+                if (i != j) {
+                    denom *= (lambdas[j] - lambdas[i]);
+                }
+            }
+            c[n][i] = prod_lambda / denom;
+        }
+    }
+
+    // Hot Loop (O(Points * M))
+    const double step = t_end / static_cast<double>(points - 1);
+    std::vector<double> E(M); // Pre-allocated buffer for exp(-lambda * t)
+
+    for (std::size_t pt = 0; pt < points; ++pt) {
+        double t = step * static_cast<double>(pt);
+        t_buf(pt) = t;
+
+        // Compute all M exponentials exactly once per time step
+        for (std::size_t i = 0; i < M; ++i) {
+            E[i] = std::exp(-lambdas[i] * t);
+        }
+
+        // Apply pre-computed coefficients
+        for (std::size_t n = 0; n < M; ++n) {
+            double N_val = 0.0;
+            for (std::size_t i = 0; i <= n; ++i) {
+                N_val += c[n][i] * E[i];
+            }
+            N_buf(n, pt) = N0 * N_val;
+        }
+    }
+
+    py::dict result;
+    result["t"] = t_arr;
+    result["N"] = N_arr;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
 PYBIND11_MODULE(_core, m) {
     m.doc() = "practicals – C++ core for physics/chemistry simulations";
 
-    m.def("ra_decay", &ra_decay,
-          py::arg("N0"),
-          py::arg("lam"),
-          py::arg("t_end"),
-          py::arg("points") = 1000,
-          R"doc(
-Simulate exponential (radioactive) decay.
+    m.def("single_decay", &single_decay,
+          py::arg("N0"), py::arg("lam"), py::arg("t_end"), py::arg("points") = 1000,
+          "Simulate simple exponential (radioactive) decay.");
 
-Parameters
-----------
-N0     : float
-    Initial quantity (number of atoms, mass, counts, etc.)
-lam    : float
-    Decay constant λ (units: 1/time).  Related to half-life by
-    λ = ln(2) / t_half.
-t_end  : float
-    End time of the simulation (same unit as 1/λ).
-points : int, optional
-    Number of evenly-spaced sample points (default 1000).
-
-Returns
--------
-dict with keys:
-    "t"      – numpy array of time values [0 … t_end]
-    "N"      – numpy array of remaining quantity  N(t) = N0·exp(−λt)
-    "decay"  – numpy array of decayed quantity    N0 − N(t)
-    "lambda" – the decay constant used
-    "t_half" – computed half-life  ln(2)/λ
-)doc");
+    m.def("chain_decay", &chain_decay,
+          py::arg("N0"), py::arg("lambdas"), py::arg("t_end"), py::arg("points") = 1000,
+          "Simulate an N-step radioactive decay chain using a list of decay constants.");
 }

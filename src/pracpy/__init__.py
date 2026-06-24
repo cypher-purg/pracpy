@@ -13,7 +13,7 @@ Quick start
 2.310...
 """
 
-from pracpy._core import ra_decay  # noqa: F401
+from pracpy._core import single_decay, chain_decay  # noqa: F401
 
-__all__ = ["ra_decay"]
+__all__ = ["single_decay", "chain_decay"]
 __version__ = "0.1.0"
