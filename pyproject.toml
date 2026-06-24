@@ -19,7 +19,7 @@ Homepage = "https://github.com/cypher-purg/pracpy"
 Repository = "https://github.com/cypher-purg/pracpy"
 
 [tool.scikit-build]
-wheel.packages = ["src/practicals"]
+wheel.packages = ["src/pracpy"]
 cmake.build-type = "Release"
 
 [tool.cibuildwheel]
