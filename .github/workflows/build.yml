@@ -14,7 +14,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # GitHub will boot up 3 separate servers to compile your code
+        # Spin up clean hosts to generate multi-platform binaries
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
@@ -23,7 +23,9 @@ jobs:
 
       - name: Build wheels using cibuildwheel
         uses: pypa/cibuildwheel@v4.1.0
-        # It automatically reads your pyproject.toml settings!
+        env:
+          # Crucial: Forces cibuildwheel to include Python 3.14 pre-release runtimes
+          CIBW_ENABLE: cpython-prerelease
 
       - name: Upload the compiled wheels
         uses: actions/upload-artifact@v4
