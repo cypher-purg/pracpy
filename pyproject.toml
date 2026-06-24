@@ -23,7 +23,7 @@ wheel.packages = ["src/pracpy"]
 cmake.build-type = "Release"
 
 [tool.cibuildwheel]
-build          = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+build          = "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip           = "*-musllinux*"
 before-build   = "pip install numpy pybind11"
 test-requires  = ["pytest", "numpy"]
